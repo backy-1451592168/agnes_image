@@ -5,7 +5,7 @@
 ## 前置条件
 
 - Node.js 18+（推荐 20+）
-- 在 [platform.agnes-ai.com](https://platform.agnes-ai.com) 注册并创建 API Key
+- 在 [Agnes 平台 API Keys 页面](https://platform.agnes-ai.com/settings/apiKeys) 注册并创建 API Key（应用内也有「前往官网获取 Key」入口）
 
 ## 快速开始
 

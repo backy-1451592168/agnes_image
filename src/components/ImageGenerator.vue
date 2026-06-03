@@ -1,10 +1,13 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { generateImage, imageItemToSrc } from '../api/agnes'
+import ChatAvatar from './ChatAvatar.vue'
+import DotGridLoader from './DotGridLoader.vue'
 import ImageLightbox from './ImageLightbox.vue'
 import type { ChatTurn, ImageSize } from '../types/agnes'
 
 const STORAGE_KEY = 'agnes_api_key'
+const API_KEYS_URL = 'https://platform.agnes-ai.com/settings/apiKeys'
 const MAX_REF_MB = 8
 
 const apiKey = ref('')
@@ -18,6 +21,8 @@ const threadRef = ref<HTMLElement | null>(null)
 const fileInputRef = ref<HTMLInputElement | null>(null)
 const referenceImageSrc = ref<string | null>(null)
 const lightboxSrc = ref<string | null>(null)
+const refDropActive = ref(false)
+const refDragDepth = ref(0)
 
 const sizeOptions: { value: ImageSize; label: string }[] = [
   { value: '1024x768', label: '1024 × 768（横图）' },
@@ -54,6 +59,11 @@ const submitLabel = computed(() => {
   return '生成图片'
 })
 
+const loaderAspectRatio = computed(() => {
+  const [w, h] = size.value.split('x').map(Number)
+  return `${w} / ${h}`
+})
+
 const refHint = computed(() => {
   if (hasUploadedRef.value && isFollowUp.value) {
     return '已上传参考图，将优先于上一轮结果作为底图'
@@ -67,10 +77,12 @@ onMounted(() => {
   const saved = localStorage.getItem(STORAGE_KEY)
   if (saved) apiKey.value = saved
   window.addEventListener('keydown', onKeydown)
+  document.addEventListener('paste', onPaste, true)
 })
 
 onUnmounted(() => {
   window.removeEventListener('keydown', onKeydown)
+  document.removeEventListener('paste', onPaste, true)
 })
 
 function onKeydown(e: KeyboardEvent) {
@@ -95,13 +107,33 @@ function pickReferenceFile() {
   fileInputRef.value?.click()
 }
 
-function onReferenceFileChange(e: Event) {
-  const input = e.target as HTMLInputElement
-  const file = input.files?.[0]
-  input.value = ''
-  if (!file) return
+function isImageFile(file: File): boolean {
+  if (file.type.startsWith('image/')) return true
+  // 截图粘贴时 type 可能为空
+  return file.type === '' && file.size > 0
+}
 
-  if (!file.type.startsWith('image/')) {
+function getImageFromClipboard(dt: DataTransfer | null): File | null {
+  if (!dt) return null
+
+  if (dt.files?.length) {
+    for (let i = 0; i < dt.files.length; i++) {
+      const file = dt.files[i]
+      if (isImageFile(file)) return file
+    }
+  }
+
+  for (const item of dt.items) {
+    if (item.kind !== 'file') continue
+    const file = item.getAsFile()
+    if (file && isImageFile(file)) return file
+  }
+
+  return null
+}
+
+function loadReferenceFile(file: File) {
+  if (!isImageFile(file)) {
     error.value = '请选择图片文件'
     return
   }
@@ -121,6 +153,43 @@ function onReferenceFileChange(e: Event) {
   reader.readAsDataURL(file)
 }
 
+function onReferenceFileChange(e: Event) {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (file) loadReferenceFile(file)
+}
+
+function onPaste(e: ClipboardEvent) {
+  if (loading.value) return
+
+  const file = getImageFromClipboard(e.clipboardData)
+  if (!file) return
+
+  e.preventDefault()
+  e.stopPropagation()
+  loadReferenceFile(file)
+}
+
+function onRefDragEnter() {
+  if (loading.value) return
+  refDragDepth.value++
+  refDropActive.value = true
+}
+
+function onRefDragLeave() {
+  refDragDepth.value = Math.max(0, refDragDepth.value - 1)
+  if (refDragDepth.value === 0) refDropActive.value = false
+}
+
+function onRefDrop(e: DragEvent) {
+  refDragDepth.value = 0
+  refDropActive.value = false
+  if (loading.value) return
+  const file = e.dataTransfer?.files?.[0]
+  if (file) loadReferenceFile(file)
+}
+
 function clearReference() {
   referenceImageSrc.value = null
 }
@@ -135,7 +204,14 @@ function newChat() {
 
 async function scrollThreadToEnd() {
   await nextTick()
-  threadRef.value?.scrollTo({ top: threadRef.value.scrollHeight, behavior: 'smooth' })
+  const el = threadRef.value
+  if (!el) return
+  const last = el.lastElementChild
+  if (last) {
+    last.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+    return
+  }
+  el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
 }
 
 function resolveReferenceImage(): string | undefined {
@@ -215,12 +291,22 @@ function downloadImage(src: string, e?: Event) {
     <section class="gen__panel">
       <form class="gen__form" @submit.prevent="onSubmit">
         <label class="field">
-          <span class="field__label">API Key</span>
+          <span class="field__label-row">
+            <span class="field__label">API Key</span>
+            <a
+              :href="API_KEYS_URL"
+              class="field__link"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              前往官网获取 Key →
+            </a>
+          </span>
           <input
             v-model="apiKey"
             class="field__input"
             type="password"
-            placeholder="在 platform.agnes-ai.com 创建"
+            placeholder="粘贴从 Agnes 平台复制的 API Key"
             autocomplete="off"
           />
         </label>
@@ -239,34 +325,48 @@ function downloadImage(src: string, e?: Event) {
             class="field__file"
             @change="onReferenceFileChange"
           />
-          <div class="ref">
-            <button
-              type="button"
-              class="gen__secondary ref__pick"
-              :disabled="loading"
-              @click="pickReferenceFile"
-            >
-              上传参考图
-            </button>
-            <button
-              v-if="hasUploadedRef"
-              type="button"
-              class="gen__secondary"
-              :disabled="loading"
-              @click="clearReference"
-            >
-              移除
-            </button>
-          </div>
-          <div v-if="hasUploadedRef" class="ref__preview">
-            <img
-              :src="referenceImageSrc!"
-              alt="参考图预览"
-              class="ref__thumb img--zoomable"
-              title="点击放大"
-              @click="openLightbox(referenceImageSrc!)"
-            />
-            <span class="field__hint">点击预览可放大</span>
+          <div
+            class="ref-drop"
+            :class="{ 'ref-drop--active': refDropActive }"
+            tabindex="0"
+            @dragenter.prevent="onRefDragEnter"
+            @dragover.prevent
+            @dragleave.prevent="onRefDragLeave"
+            @drop.prevent="onRefDrop"
+            @paste="onPaste"
+          >
+            <div class="ref">
+              <button
+                type="button"
+                class="gen__secondary ref__pick"
+                :disabled="loading"
+                @click="pickReferenceFile"
+              >
+                上传参考图
+              </button>
+              <button
+                v-if="hasUploadedRef"
+                type="button"
+                class="gen__secondary"
+                :disabled="loading"
+                @click="clearReference"
+              >
+                移除
+              </button>
+            </div>
+            <p class="ref-drop__hint">
+              拖拽到此处，或按 Ctrl+V / ⌘V 粘贴图片（含截图）；点击此区域后粘贴更稳定
+            </p>
+            <div v-if="hasUploadedRef" class="ref__preview">
+              <img
+                :src="referenceImageSrc!"
+                alt="参考图预览"
+                class="ref__thumb img--zoomable"
+                title="点击放大"
+                @click="openLightbox(referenceImageSrc!)"
+              />
+              <span class="field__hint">点击预览可放大</span>
+            </div>
           </div>
         </div>
 
@@ -333,41 +433,44 @@ function downloadImage(src: string, e?: Event) {
           class="turn"
           :class="`turn--${turn.role}`"
         >
-          <div v-if="turn.role === 'user'" class="turn__user">
-            <p class="turn__prompt">{{ turn.prompt }}</p>
-            <img
-              v-if="turn.referenceImageSrc"
-              :src="turn.referenceImageSrc"
-              alt="本轮参考图"
-              class="turn__ref-thumb img--zoomable"
-              title="点击放大"
-              @click="openLightbox(turn.referenceImageSrc)"
-            />
-          </div>
+          <ChatAvatar :role="turn.role" />
 
-          <template v-else>
-            <div v-if="turn.pending" class="turn__pending">
-              <span class="gen__spinner" aria-hidden="true" />
-              <span>生成中…</span>
-            </div>
-            <p v-else-if="turn.error" class="turn__error">{{ turn.error }}</p>
-            <div v-else-if="turn.imageSrc" class="turn__result">
+          <div class="turn__body">
+            <div v-if="turn.role === 'user'" class="turn__user">
+              <p class="turn__prompt">{{ turn.prompt }}</p>
               <img
-                :src="turn.imageSrc"
-                alt="生成的图片"
-                class="turn__img img--zoomable"
+                v-if="turn.referenceImageSrc"
+                :src="turn.referenceImageSrc"
+                alt="本轮参考图"
+                class="turn__ref-thumb img--zoomable"
                 title="点击放大"
-                @click="openLightbox(turn.imageSrc)"
+                @click="openLightbox(turn.referenceImageSrc)"
               />
-              <button
-                type="button"
-                class="gen__download"
-                @click="downloadImage(turn.imageSrc, $event)"
-              >
-                下载
-              </button>
             </div>
-          </template>
+
+            <template v-else>
+              <div v-if="turn.pending" class="turn__pending">
+                <DotGridLoader :aspect-ratio="loaderAspectRatio" />
+              </div>
+              <p v-else-if="turn.error" class="turn__error">{{ turn.error }}</p>
+              <div v-else-if="turn.imageSrc" class="turn__result">
+                <img
+                  :src="turn.imageSrc"
+                  alt="生成的图片"
+                  class="turn__img turn__img--reveal img--zoomable"
+                  title="点击放大"
+                  @click="openLightbox(turn.imageSrc)"
+                />
+                <button
+                  type="button"
+                  class="gen__download"
+                  @click="downloadImage(turn.imageSrc, $event)"
+                >
+                  下载
+                </button>
+              </div>
+            </template>
+          </div>
         </article>
       </div>
     </section>
@@ -382,6 +485,14 @@ function downloadImage(src: string, e?: Event) {
 .gen {
   display: grid;
   gap: 1.5rem;
+  width: 100%;
+  min-width: 0;
+}
+
+@media (max-width: 839px) {
+  .turn--user {
+    max-width: 100%;
+  }
 }
 
 @media (min-width: 840px) {
@@ -422,6 +533,29 @@ function downloadImage(src: string, e?: Event) {
   font-weight: 600;
   letter-spacing: 0.04em;
   color: var(--text-muted);
+}
+
+.field__label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.field__link {
+  font-size: 0.78rem;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--accent);
+  text-decoration: none;
+  white-space: nowrap;
+  transition: color 0.15s;
+}
+
+.field__link:hover {
+  color: var(--text);
+  text-decoration: underline;
 }
 
 .field__hint {
@@ -476,6 +610,33 @@ function downloadImage(src: string, e?: Event) {
   width: 1rem;
   height: 1rem;
   accent-color: var(--accent);
+}
+
+.ref-drop {
+  padding: 0.75rem;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  background: var(--surface-raised);
+  outline: none;
+  transition:
+    border-color 0.15s,
+    background 0.15s;
+}
+
+.ref-drop:focus-visible {
+  border-color: var(--accent-dim);
+}
+
+.ref-drop--active {
+  border-color: var(--accent);
+  background: rgba(212, 168, 120, 0.08);
+}
+
+.ref-drop__hint {
+  margin: 0.5rem 0 0;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  line-height: 1.4;
 }
 
 .ref {
@@ -560,22 +721,48 @@ function downloadImage(src: string, e?: Event) {
   color: var(--danger);
 }
 
+/* 默认（移动端）：随内容撑开，无内部滚动条 */
 .gen__thread-wrap {
-  min-height: 360px;
-  max-height: min(72vh, 720px);
   display: flex;
   flex-direction: column;
   padding: 0;
-  overflow: hidden;
+  min-width: 0;
+  min-height: auto;
+  max-height: none;
+  overflow: visible;
 }
 
 .gen__thread {
-  flex: 1;
-  overflow-y: auto;
-  padding: 1rem 1.15rem;
   display: flex;
   flex-direction: column;
   gap: 1rem;
+  min-width: 0;
+  padding: 0.75rem 0;
+  overflow: visible;
+}
+
+@media (max-width: 839px) {
+  .gen__panel,
+  .gen__thread-wrap {
+    padding: 1rem;
+  }
+}
+
+@media (min-width: 840px) {
+  .gen__thread-wrap {
+    min-height: 360px;
+    max-height: min(72vh, 720px);
+    overflow: hidden;
+  }
+
+  .gen__thread {
+    flex: 1;
+    min-height: 0;
+    padding: 1rem 1.15rem;
+    overflow-x: hidden;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
 }
 
 .gen__placeholder {
@@ -593,27 +780,27 @@ function downloadImage(src: string, e?: Event) {
   font-size: 0.85rem;
 }
 
-.gen__spinner {
-  display: inline-block;
-  width: 20px;
-  height: 20px;
-  border: 2px solid var(--border);
-  border-top-color: var(--accent);
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-  vertical-align: middle;
-  margin-right: 0.5rem;
-}
-
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
+.turn {
+  display: flex;
+  gap: 0.65rem;
+  align-items: flex-start;
+  width: 100%;
+  min-width: 0;
 }
 
 .turn--user {
+  flex-direction: row-reverse;
   align-self: flex-end;
-  max-width: 92%;
+  max-width: 100%;
+}
+
+.turn--assistant {
+  align-self: flex-start;
+}
+
+.turn__body {
+  flex: 1;
+  min-width: 0;
 }
 
 .turn__user {
@@ -642,17 +829,23 @@ function downloadImage(src: string, e?: Event) {
   border: 1px solid var(--border);
 }
 
-.turn--assistant {
-  align-self: flex-start;
-  max-width: 100%;
+.turn__pending {
+  width: 100%;
 }
 
-.turn__pending {
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
-  color: var(--text-muted);
-  font-size: 0.88rem;
+.turn__img--reveal {
+  animation: img-reveal 0.55s ease-out both;
+}
+
+@keyframes img-reveal {
+  from {
+    opacity: 0;
+    filter: blur(6px);
+  }
+  to {
+    opacity: 1;
+    filter: blur(0);
+  }
 }
 
 .turn__error {
@@ -669,7 +862,10 @@ function downloadImage(src: string, e?: Event) {
 }
 
 .turn__img {
+  display: block;
+  width: 100%;
   max-width: 100%;
+  height: auto;
   border-radius: 6px;
   border: 1px solid var(--border);
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
