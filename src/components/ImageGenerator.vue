@@ -4,7 +4,19 @@ import { generateImage, imageItemToSrc } from '../api/agnes'
 import ChatAvatar from './ChatAvatar.vue'
 import DotGridLoader from './DotGridLoader.vue'
 import ImageLightbox from './ImageLightbox.vue'
-import type { ChatTurn, ImageSize } from '../types/agnes'
+import type { ChatSession, ChatTurn, ImageSize } from '../types/agnes'
+import {
+  cloneTurns,
+  formatSessionTime,
+  getStorableTurns,
+  loadActiveSessionId,
+  loadSessions,
+  saveActiveSessionId,
+  saveSessions,
+  upsertSession,
+  userTurnCount,
+  lastAssistantImageSrc,
+} from '../utils/chatHistory'
 
 const STORAGE_KEY = 'agnes_api_key'
 const API_KEYS_URL = 'https://platform.agnes-ai.com/settings/apiKeys'
@@ -17,6 +29,9 @@ const size = ref<ImageSize>('1024x768')
 const loading = ref(false)
 const error = ref<string | null>(null)
 const turns = ref<ChatTurn[]>([])
+const sessions = ref<ChatSession[]>([])
+const activeSessionId = ref<string | null>(null)
+const historyOpen = ref(false)
 const threadRef = ref<HTMLElement | null>(null)
 const fileInputRef = ref<HTMLInputElement | null>(null)
 const referenceImageSrc = ref<string | null>(null)
@@ -36,13 +51,7 @@ const effectiveApiKey = computed(() => {
   return import.meta.env.VITE_AGNES_API_KEY?.trim() ?? ''
 })
 
-const lastImageSrc = computed(() => {
-  for (let i = turns.value.length - 1; i >= 0; i--) {
-    const t = turns.value[i]
-    if (t.role === 'assistant' && t.imageSrc) return t.imageSrc
-  }
-  return null
-})
+const lastImageSrc = computed(() => lastAssistantImageSrc(turns.value))
 
 const isFollowUp = computed(() => lastImageSrc.value !== null)
 const hasUploadedRef = computed(() => referenceImageSrc.value !== null)
@@ -70,19 +79,112 @@ const refHint = computed(() => {
   }
   if (hasUploadedRef.value) return '将基于上传的参考图生成'
   if (isFollowUp.value) return '将基于上一张生成图继续修改'
+  if (turns.value.length) return '历史图片未缓存，可上传参考图后继续改图'
   return ''
 })
+
+const hasHistory = computed(() => sessions.value.length > 0)
+
+function restoreHistoryOnMount() {
+  sessions.value = loadSessions()
+  const activeId = loadActiveSessionId()
+  const target =
+    (activeId && sessions.value.find((s) => s.id === activeId)) ?? sessions.value[0]
+  if (!target) return
+  activeSessionId.value = target.id
+  turns.value = cloneTurns(target.turns)
+  size.value = target.size
+}
+
+function persistCurrentSession(options?: { silent?: boolean }) {
+  if (!getStorableTurns(turns.value).length) return
+
+  const { sessions: next, activeId } = upsertSession(sessions.value, {
+    id: activeSessionId.value,
+    turns: turns.value,
+    size: size.value,
+  })
+  if (!activeId) return
+  const result = saveSessions(next)
+  if (!result.ok) {
+    if (!options?.silent) {
+      error.value = result.error
+    }
+    return
+  }
+  saveActiveSessionId(activeId)
+  sessions.value = result.sessions
+  activeSessionId.value = activeId
+  if (result.stripped && !options?.silent) {
+    error.value = '本地存储空间不足，已仅保存文字对话（图片未写入历史）'
+  }
+}
+
+function onBeforeUnload() {
+  if (loading.value || !getStorableTurns(turns.value).length) return
+  persistCurrentSession({ silent: true })
+}
+
+function loadSession(id: string) {
+  if (loading.value) return
+  if (activeSessionId.value !== id && getStorableTurns(turns.value).length) {
+    persistCurrentSession({ silent: true })
+  }
+
+  sessions.value = loadSessions()
+  const session = sessions.value.find((s) => s.id === id)
+  if (!session) return
+
+  activeSessionId.value = session.id
+  saveActiveSessionId(session.id)
+  turns.value = cloneTurns(session.turns)
+  size.value = session.size
+  prompt.value = ''
+  error.value = null
+  clearReference()
+  historyOpen.value = false
+  scrollThreadToEnd()
+}
+
+function deleteSession(id: string, e?: Event) {
+  e?.stopPropagation()
+  const next = sessions.value.filter((s) => s.id !== id)
+  const result = saveSessions(next)
+  if (!result.ok) {
+    error.value = result.error
+    return
+  }
+  sessions.value = result.sessions
+  if (activeSessionId.value === id) {
+    activeSessionId.value = null
+    saveActiveSessionId(null)
+    turns.value = []
+  }
+}
+
+function clearAllHistory() {
+  if (!confirm('确定清空全部历史记录？此操作不可恢复。')) return
+  saveSessions([])
+  saveActiveSessionId(null)
+  sessions.value = []
+  activeSessionId.value = null
+  turns.value = []
+  historyOpen.value = false
+}
 
 onMounted(() => {
   const saved = localStorage.getItem(STORAGE_KEY)
   if (saved) apiKey.value = saved
+  restoreHistoryOnMount()
   window.addEventListener('keydown', onKeydown)
   document.addEventListener('paste', onPaste, true)
+  window.addEventListener('beforeunload', onBeforeUnload)
 })
 
 onUnmounted(() => {
   window.removeEventListener('keydown', onKeydown)
   document.removeEventListener('paste', onPaste, true)
+  window.removeEventListener('beforeunload', onBeforeUnload)
 })
 
 function onKeydown(e: KeyboardEvent) {
@@ -196,6 +298,9 @@ function clearReference() {
 
 function newChat() {
   if (loading.value) return
+  persistCurrentSession()
+  activeSessionId.value = null
+  saveActiveSessionId(null)
   turns.value = []
   prompt.value = ''
   error.value = null
@@ -244,6 +349,7 @@ async function onSubmit() {
     role: 'assistant',
     pending: true,
   })
+  persistCurrentSession({ silent: true })
   await scrollThreadToEnd()
 
   try {
@@ -253,12 +359,18 @@ async function onSubmit() {
       apiKey: effectiveApiKey.value,
       referenceImage,
     })
-    const src = imageItemToSrc(res.data[0])
+    const item = res.data[0]
+    const src = imageItemToSrc(item)
     if (!src) throw new Error('无法解析返回的图片')
 
     const idx = turns.value.findIndex((t) => t.id === assistantId)
     if (idx !== -1) {
-      turns.value[idx] = { id: assistantId, role: 'assistant', imageSrc: src }
+      turns.value[idx] = {
+        id: assistantId,
+        role: 'assistant',
+        imageSrc: src,
+        revisedPrompt: item.revised_prompt,
+      }
     }
   } catch (e) {
     const msg = e instanceof Error ? e.message : '生成失败'
@@ -269,6 +381,7 @@ async function onSubmit() {
     }
   } finally {
     loading.value = false
+    persistCurrentSession()
     await scrollThreadToEnd()
   }
 }
@@ -315,6 +428,70 @@ function downloadImage(src: string, e?: Event) {
           <input v-model="rememberKey" type="checkbox" class="field__check" />
           <span class="field__hint">记住 Key（仅存于本机 localStorage）</span>
         </label>
+
+        <div class="history field">
+          <div class="history__head">
+            <span class="field__label">历史记录</span>
+            <button
+              type="button"
+              class="history__toggle"
+              :disabled="loading"
+              @click="historyOpen = !historyOpen"
+            >
+              {{ historyOpen ? '收起' : hasHistory ? `查看 (${sessions.length})` : '暂无' }}
+            </button>
+          </div>
+          <div v-if="historyOpen" class="history__panel">
+            <p v-if="!hasHistory" class="field__hint">生成后会自动保存到本机</p>
+            <p v-else class="field__hint history__hint">
+              点击加载后可继续改图；有缓存图片时将自动作为底图
+            </p>
+            <ul v-if="hasHistory" class="history__list">
+              <li
+                v-for="session in sessions"
+                :key="session.id"
+                class="history__item"
+                :class="{ 'history__item--active': session.id === activeSessionId }"
+              >
+                <button
+                  type="button"
+                  class="history__load"
+                  :disabled="loading"
+                  @click="loadSession(session.id)"
+                >
+                  <span class="history__title">{{ session.title }}</span>
+                  <span class="history__meta">
+                    {{ userTurnCount(session.turns) }} 轮 · {{ formatSessionTime(session.updatedAt) }}
+                    <span
+                      v-if="lastAssistantImageSrc(session.turns)"
+                      class="history__continue"
+                    >
+                      可继续改图
+                    </span>
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  class="history__delete"
+                  :disabled="loading"
+                  aria-label="删除"
+                  @click="deleteSession(session.id, $event)"
+                >
+                  ×
+                </button>
+              </li>
+            </ul>
+            <button
+              v-if="hasHistory"
+              type="button"
+              class="history__clear"
+              :disabled="loading"
+              @click="clearAllHistory"
+            >
+              清空全部历史
+            </button>
+          </div>
+        </div>
 
         <div class="field">
           <span class="field__label">参考图（可选）</span>
@@ -378,7 +555,7 @@ function downloadImage(src: string, e?: Event) {
             </option>
           </select>
         </label>
-        <p v-else-if="refHint" class="field__hint field__hint--block">
+        <p v-if="refHint" class="field__hint field__hint--block">
           {{ refHint }}
         </p>
 
@@ -469,6 +646,8 @@ function downloadImage(src: string, e?: Event) {
                   下载
                 </button>
               </div>
+              <p v-else-if="turn.revisedPrompt" class="turn__revised">{{ turn.revisedPrompt }}</p>
+              <p v-else class="turn__missing">图片未缓存到本地，请重新生成</p>
             </template>
           </div>
         </article>
@@ -680,6 +859,130 @@ function downloadImage(src: string, e?: Event) {
   gap: 0.5rem;
 }
 
+.history__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.history__toggle {
+  padding: 0.35rem 0.65rem;
+  font-size: 0.78rem;
+  color: var(--accent);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.history__toggle:hover:not(:disabled) {
+  border-color: var(--accent-dim);
+  color: var(--text);
+}
+
+.history__panel {
+  margin-top: 0.35rem;
+  padding: 0.65rem;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.history__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.history__item {
+  display: flex;
+  align-items: stretch;
+  gap: 0.35rem;
+  border-radius: 6px;
+  border: 1px solid transparent;
+}
+
+.history__item--active {
+  border-color: var(--accent-dim);
+  background: rgba(212, 168, 120, 0.08);
+}
+
+.history__load {
+  flex: 1;
+  min-width: 0;
+  padding: 0.45rem 0.55rem;
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+}
+
+.history__load:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.history__title {
+  display: block;
+  font-size: 0.84rem;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.history__meta {
+  display: block;
+  margin-top: 0.15rem;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.history__hint {
+  margin: 0 0 0.5rem;
+}
+
+.history__continue {
+  margin-left: 0.35rem;
+  color: var(--accent);
+}
+
+.history__delete {
+  flex-shrink: 0;
+  width: 2rem;
+  font-size: 1.1rem;
+  line-height: 1;
+  color: var(--text-muted);
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+}
+
+.history__delete:hover:not(:disabled) {
+  color: var(--danger);
+  background: rgba(224, 122, 106, 0.1);
+}
+
+.history__clear {
+  width: 100%;
+  margin-top: 0.5rem;
+  padding: 0.45rem;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+}
+
+.history__clear:hover:not(:disabled) {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
 .gen__submit {
   flex: 1;
   min-width: 120px;
@@ -817,7 +1120,7 @@ function downloadImage(src: string, e?: Event) {
   line-height: 1.45;
   background: var(--surface-raised);
   border: 1px solid var(--border);
-  border-radius: 10px 10px 4px 10px;
+  border-radius: 16px 16px 6px 16px;
   color: var(--text);
 }
 
@@ -854,6 +1157,20 @@ function downloadImage(src: string, e?: Event) {
   color: var(--danger);
 }
 
+.turn__revised {
+  margin: 0;
+  font-size: 0.88rem;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.turn__missing {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
 .turn__result {
   display: flex;
   flex-direction: column;
@@ -866,7 +1183,7 @@ function downloadImage(src: string, e?: Event) {
   width: 100%;
   max-width: 100%;
   height: auto;
-  border-radius: 6px;
+  border-radius: 28px;
   border: 1px solid var(--border);
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
 }

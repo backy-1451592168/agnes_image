@@ -27,9 +27,9 @@ withDefaults(
 
 .dot-loader__surface {
   position: relative;
-  width: 100%;
-  min-height: 240px;
-  border-radius: 6px;
+  width: 60%;
+  max-width: 300px;
+  border-radius: 10px;
   border: 1px solid var(--border);
   overflow: hidden;
   background: #d6d2cd;

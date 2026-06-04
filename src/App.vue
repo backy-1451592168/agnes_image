@@ -37,7 +37,7 @@ onUnmounted(() => {
   <div class="app">
     <header class="app__header">
       <p class="app__eyebrow">Agnes Image 2.1 Flash</p>
-      <h1 class="app__title">文生图</h1>
+      <h1 class="app__title">无限想象</h1>
       <p class="app__desc">输入描述，通过 Agnes API 生成画面</p>
     </header>
     <main class="app__main">

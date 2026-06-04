@@ -23,11 +23,21 @@ export interface ChatTurn {
   id: string
   role: 'user' | 'assistant'
   prompt?: string
+  /** API 返回的修订提示词（assistant 轮次） */
+  revisedPrompt?: string
   /** 本轮使用的上传参考图（仅展示） */
   referenceImageSrc?: string
   imageSrc?: string
   error?: string
   pending?: boolean
+}
+
+export interface ChatSession {
+  id: string
+  title: string
+  updatedAt: number
+  size: ImageSize
+  turns: ChatTurn[]
 }
 
 export interface GeneratedImageItem {
