@@ -435,6 +435,11 @@ function downloadImage(src: string, e?: Event) {
 <template>
   <div class="gen">
     <section class="gen__panel">
+      <header class="gen__header">
+        <p class="gen__eyebrow">Agnes Image 2.1 Flash</p>
+        <h1 class="gen__title">无限想象</h1>
+        <p class="gen__desc">输入描述，通过 Agnes API 生成画面</p>
+      </header>
       <form class="gen__form" @submit.prevent="onSubmit">
         <label class="field">
           <span class="field__label-row">
@@ -836,7 +841,9 @@ function downloadImage(src: string, e?: Event) {
 @media (min-width: 840px) {
   .gen {
     grid-template-columns: minmax(280px, 360px) 1fr;
-    align-items: start;
+    align-items: stretch;
+    flex: 1;
+    min-height: 0;
   }
 }
 
@@ -846,6 +853,36 @@ function downloadImage(src: string, e?: Event) {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 1.25rem 1.35rem;
+}
+
+.gen__header {
+  margin-bottom: 1.25rem;
+}
+
+.gen__eyebrow {
+  margin: 0 0 0.35rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.gen__title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: clamp(1.75rem, 4vw, 2.25rem);
+  font-weight: 400;
+  font-style: italic;
+  line-height: 1.1;
+  color: var(--text);
+}
+
+.gen__desc {
+  margin: 0.5rem 0 0;
+  font-size: 0.88rem;
+  line-height: 1.45;
+  color: var(--text-muted);
 }
 
 .gen__form {
@@ -1317,13 +1354,14 @@ function downloadImage(src: string, e?: Event) {
 
 @media (min-width: 840px) {
   .gen__thread-wrap {
-    min-height: 360px;
-    max-height: min(72vh, 720px);
+    min-height: 0;
+    height: 100%;
     overflow: hidden;
   }
 
   .gen__thread {
-    flex: 1;
+    flex: 1 1 0;
+    justify-content: center;
     min-height: 0;
     padding: 1rem 1.15rem 0.5rem;
     overflow-x: hidden;
