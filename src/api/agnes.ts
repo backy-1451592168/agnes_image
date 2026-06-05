@@ -7,7 +7,8 @@ import {
   type GeneratedImageItem,
 } from '../types/agnes'
 
-const ENDPOINT = '/api/images/generations'
+const apiBase = import.meta.env.VITE_AGNES_API_BASE.replace(/\/$/, '')
+const ENDPOINT = `${apiBase}/images/generations`
 
 async function parseErrorMessage(res: Response): Promise<string> {
   try {

@@ -17,12 +17,14 @@ import {
   userTurnCount,
   lastAssistantImageSrc,
 } from '../utils/chatHistory'
+import { randomId } from '../utils/randomId'
 
 const STORAGE_KEY = 'agnes_api_key'
 const API_KEYS_URL = 'https://platform.agnes-ai.com/settings/apiKeys'
 const MAX_REF_MB = 8
 
 const apiKey = ref('')
+const showApiKey = ref(false)
 const rememberKey = ref(true)
 const prompt = ref('')
 const size = ref<ImageSize>('1024x768')
@@ -33,7 +35,6 @@ const sessions = ref<ChatSession[]>([])
 const activeSessionId = ref<string | null>(null)
 const historyOpen = ref(false)
 const threadRef = ref<HTMLElement | null>(null)
-const fileInputRef = ref<HTMLInputElement | null>(null)
 const referenceImageSrc = ref<string | null>(null)
 const lightboxSrc = ref<string | null>(null)
 const refDropActive = ref(false)
@@ -84,6 +85,11 @@ const refHint = computed(() => {
 })
 
 const hasHistory = computed(() => sessions.value.length > 0)
+
+const lastFailedAssistantId = computed(() => {
+  const last = turns.value[turns.value.length - 1]
+  return last?.role === 'assistant' && last.error ? last.id : null
+})
 
 function restoreHistoryOnMount() {
   sessions.value = loadSessions()
@@ -205,10 +211,6 @@ function openLightbox(src: string) {
   lightboxSrc.value = src
 }
 
-function pickReferenceFile() {
-  fileInputRef.value?.click()
-}
-
 function isImageFile(file: File): boolean {
   if (file.type.startsWith('image/')) return true
   // 截图粘贴时 type 可能为空
@@ -324,33 +326,18 @@ function resolveReferenceImage(): string | undefined {
   return lastImageSrc.value ?? undefined
 }
 
-async function onSubmit() {
-  if (!canSubmit.value) return
-
-  persistKey()
-  const text = prompt.value.trim()
-  const referenceImage = resolveReferenceImage()
-  const usedUploadRef = Boolean(
-    referenceImageSrc.value && referenceImage === referenceImageSrc.value,
-  )
-  prompt.value = ''
-  error.value = null
+async function fulfillGeneration(
+  assistantId: string,
+  text: string,
+  referenceImage: string | undefined,
+) {
   loading.value = true
+  error.value = null
 
-  const userTurn: ChatTurn = {
-    id: crypto.randomUUID(),
-    role: 'user',
-    prompt: text,
-    referenceImageSrc: usedUploadRef ? referenceImageSrc.value! : undefined,
+  const idx = turns.value.findIndex((t) => t.id === assistantId)
+  if (idx !== -1) {
+    turns.value[idx] = { id: assistantId, role: 'assistant', pending: true }
   }
-  const assistantId = crypto.randomUUID()
-  turns.value.push(userTurn, {
-    id: assistantId,
-    role: 'assistant',
-    pending: true,
-  })
-  persistCurrentSession({ silent: true })
-  await scrollThreadToEnd()
 
   try {
     const res = await generateImage({
@@ -363,7 +350,6 @@ async function onSubmit() {
     const src = imageItemToSrc(item)
     if (!src) throw new Error('无法解析返回的图片')
 
-    const idx = turns.value.findIndex((t) => t.id === assistantId)
     if (idx !== -1) {
       turns.value[idx] = {
         id: assistantId,
@@ -375,7 +361,6 @@ async function onSubmit() {
   } catch (e) {
     const msg = e instanceof Error ? e.message : '生成失败'
     error.value = msg
-    const idx = turns.value.findIndex((t) => t.id === assistantId)
     if (idx !== -1) {
       turns.value[idx] = { id: assistantId, role: 'assistant', error: msg }
     }
@@ -384,6 +369,54 @@ async function onSubmit() {
     persistCurrentSession()
     await scrollThreadToEnd()
   }
+}
+
+async function retryGeneration(assistantId: string) {
+  if (loading.value) return
+
+  persistKey()
+  const asstIdx = turns.value.findIndex((t) => t.id === assistantId)
+  if (asstIdx <= 0) return
+
+  const user = turns.value[asstIdx - 1]
+  if (user?.role !== 'user' || !user.prompt?.trim()) return
+
+  const text = user.prompt.trim()
+  const referenceImage =
+    user.referenceImageSrc ??
+    lastAssistantImageSrc(turns.value.slice(0, asstIdx - 1)) ??
+    undefined
+
+  await fulfillGeneration(assistantId, text, referenceImage)
+}
+
+async function onSubmit() {
+  if (!canSubmit.value) return
+
+  persistKey()
+  const text = prompt.value.trim()
+  const referenceImage = resolveReferenceImage()
+  const uploadedReferenceImage = referenceImageSrc.value
+  const usedUploadRef = Boolean(uploadedReferenceImage && referenceImage === uploadedReferenceImage)
+  prompt.value = ''
+
+  const userTurn: ChatTurn = {
+    id: randomId(),
+    role: 'user',
+    prompt: text,
+    referenceImageSrc: usedUploadRef ? uploadedReferenceImage! : undefined,
+  }
+  const assistantId = randomId()
+  turns.value.push(userTurn, {
+    id: assistantId,
+    role: 'assistant',
+    pending: true,
+  })
+  if (usedUploadRef) clearReference()
+  persistCurrentSession({ silent: true })
+  await scrollThreadToEnd()
+
+  await fulfillGeneration(assistantId, text, referenceImage)
 }
 
 function downloadImage(src: string, e?: Event) {
@@ -415,13 +448,56 @@ function downloadImage(src: string, e?: Event) {
               前往官网获取 Key →
             </a>
           </span>
-          <input
-            v-model="apiKey"
-            class="field__input"
-            type="password"
-            placeholder="粘贴从 Agnes 平台复制的 API Key"
-            autocomplete="off"
-          />
+          <div class="field__input-wrap">
+            <input
+              v-model="apiKey"
+              class="field__input field__input--action"
+              :type="showApiKey ? 'text' : 'password'"
+              placeholder="粘贴从 Agnes 平台复制的 API Key"
+              autocomplete="off"
+            />
+            <button
+              type="button"
+              class="field__toggle"
+              :aria-label="showApiKey ? '隐藏 API Key' : '显示 API Key'"
+              :aria-pressed="showApiKey"
+              @click.stop="showApiKey = !showApiKey"
+            >
+              <svg
+                v-if="!showApiKey"
+                class="field__toggle-icon"
+                viewBox="0 0 24 24"
+                aria-hidden="true"
+              >
+                <path
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.75"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  d="M3 3l18 18M10.5 10.677a2.25 2.25 0 0 0 3.046 3.046M7.5 7.846c-2.047 1.24-3.5 3.154-4.5 4.154 0 0 3.5 5 9 5 1.55 0 2.96-.38 4.2-.99M14.121 14.121A2.25 2.25 0 0 0 9.88 9.88"
+                />
+              </svg>
+              <svg v-else class="field__toggle-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.75"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  d="M2.25 12s3.75-7.5 9.75-7.5S21.75 12 21.75 12s-3.75 7.5-9.75 7.5S2.25 12 2.25 12z"
+                />
+                <circle
+                  cx="12"
+                  cy="12"
+                  r="2.75"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.75"
+                />
+              </svg>
+            </button>
+          </div>
         </label>
 
         <label class="field field--row">
@@ -495,13 +571,6 @@ function downloadImage(src: string, e?: Event) {
 
         <div class="field">
           <span class="field__label">参考图（可选）</span>
-          <input
-            ref="fileInputRef"
-            type="file"
-            accept="image/*"
-            class="field__file"
-            @change="onReferenceFileChange"
-          />
           <div
             class="ref-drop"
             :class="{ 'ref-drop--active': refDropActive }"
@@ -513,14 +582,19 @@ function downloadImage(src: string, e?: Event) {
             @paste="onPaste"
           >
             <div class="ref">
-              <button
-                type="button"
+              <label
                 class="gen__secondary ref__pick"
-                :disabled="loading"
-                @click="pickReferenceFile"
+                :class="{ 'ref__pick--disabled': loading }"
               >
                 上传参考图
-              </button>
+                <input
+                  type="file"
+                  accept="image/*"
+                  class="field__file"
+                  :disabled="loading"
+                  @change="onReferenceFileChange"
+                />
+              </label>
               <button
                 v-if="hasUploadedRef"
                 type="button"
@@ -591,7 +665,36 @@ function downloadImage(src: string, e?: Event) {
           </button>
         </div>
 
-        <p v-if="error" class="gen__error" role="alert">{{ error }}</p>
+        <div v-if="error" class="gen__error-wrap" role="alert">
+          <p class="gen__error" :title="error">{{ error }}</p>
+          <button
+            v-if="lastFailedAssistantId"
+            type="button"
+            class="gen__retry"
+            :disabled="loading"
+            aria-label="重试生成"
+            @click="retryGeneration(lastFailedAssistantId)"
+          >
+            <svg class="gen__retry-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.75"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                d="M23 4v6h-6"
+              />
+              <path
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.75"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"
+              />
+            </svg>
+          </button>
+        </div>
       </form>
     </section>
 
@@ -629,7 +732,35 @@ function downloadImage(src: string, e?: Event) {
               <div v-if="turn.pending" class="turn__pending">
                 <DotGridLoader :aspect-ratio="loaderAspectRatio" />
               </div>
-              <p v-else-if="turn.error" class="turn__error">{{ turn.error }}</p>
+              <div v-else-if="turn.error" class="turn__error-wrap">
+                <p class="turn__error" :title="turn.error">{{ turn.error }}</p>
+                <button
+                  type="button"
+                  class="turn__retry"
+                  :disabled="loading"
+                  aria-label="重试生成"
+                  @click="retryGeneration(turn.id)"
+                >
+                  <svg class="turn__retry-icon" viewBox="0 0 24 24" aria-hidden="true">
+                    <path
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.75"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      d="M23 4v6h-6"
+                    />
+                    <path
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.75"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"
+                    />
+                  </svg>
+                </button>
+              </div>
               <div v-else-if="turn.imageSrc" class="turn__result">
                 <img
                   :src="turn.imageSrc"
@@ -671,6 +802,30 @@ function downloadImage(src: string, e?: Event) {
 @media (max-width: 839px) {
   .turn--user {
     max-width: 100%;
+  }
+
+  .gen__error-wrap,
+  .turn__error-wrap {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.35rem;
+    max-width: 100%;
+  }
+
+  .gen__error,
+  .turn__error {
+    flex: 1;
+    min-width: 0;
+    font-size: 0.78rem;
+    line-height: 1.35;
+    word-break: break-word;
+    overflow-wrap: anywhere;
+  }
+
+  .gen__retry,
+  .turn__retry {
+    width: 1.75rem;
+    height: 1.75rem;
   }
 }
 
@@ -752,10 +907,18 @@ function downloadImage(src: string, e?: Event) {
 
 .field__file {
   position: absolute;
-  width: 0;
-  height: 0;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
   opacity: 0;
-  pointer-events: none;
+  cursor: pointer;
+  font-size: 0;
+}
+
+.field__input-wrap {
+  position: relative;
 }
 
 .field__input {
@@ -766,6 +929,43 @@ function downloadImage(src: string, e?: Event) {
   border-radius: 6px;
   outline: none;
   transition: border-color 0.15s;
+}
+
+.field__input--action {
+  padding-right: 2.75rem;
+}
+
+.field__toggle {
+  position: absolute;
+  top: 50%;
+  right: 0.35rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  border-radius: 4px;
+  transform: translateY(-50%);
+  cursor: pointer;
+}
+
+.field__toggle:hover {
+  color: var(--accent);
+}
+
+.field__toggle:focus-visible {
+  outline: 2px solid var(--accent-dim);
+  outline-offset: 1px;
+}
+
+.field__toggle-icon {
+  display: block;
+  width: 1.125rem;
+  height: 1.125rem;
 }
 
 .field__input:focus {
@@ -825,8 +1025,17 @@ function downloadImage(src: string, e?: Event) {
 }
 
 .ref__pick {
+  position: relative;
   flex: 1;
   min-width: 120px;
+  cursor: pointer;
+  text-align: center;
+}
+
+.ref__pick--disabled {
+  opacity: 0.55;
+  pointer-events: none;
+  cursor: not-allowed;
 }
 
 .ref__preview {
@@ -1018,10 +1227,60 @@ function downloadImage(src: string, e?: Event) {
   border-color: var(--accent-dim);
 }
 
-.gen__error {
+.gen__error-wrap,
+.turn__error-wrap {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+  max-width: 100%;
+}
+
+.gen__error,
+.turn__error {
+  flex: 1;
+  min-width: 0;
   margin: 0;
   font-size: 0.88rem;
   color: var(--danger);
+  line-height: 1.45;
+}
+
+.gen__retry,
+.turn__retry {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  color: var(--text-muted);
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  transition:
+    color 0.15s,
+    border-color 0.15s;
+}
+
+.gen__retry:hover:not(:disabled),
+.turn__retry:hover:not(:disabled) {
+  color: var(--accent);
+  border-color: var(--accent-dim);
+}
+
+.gen__retry:disabled,
+.turn__retry:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.gen__retry-icon,
+.turn__retry-icon {
+  display: block;
+  width: 1.05rem;
+  height: 1.05rem;
 }
 
 /* 默认（移动端）：随内容撑开，无内部滚动条 */
@@ -1149,12 +1408,6 @@ function downloadImage(src: string, e?: Event) {
     opacity: 1;
     filter: blur(0);
   }
-}
-
-.turn__error {
-  margin: 0;
-  font-size: 0.88rem;
-  color: var(--danger);
 }
 
 .turn__revised {

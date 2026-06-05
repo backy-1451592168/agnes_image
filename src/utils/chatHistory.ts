@@ -1,4 +1,5 @@
 import type { ChatSession, ChatTurn, ImageSize } from '../types/agnes'
+import { randomId } from './randomId'
 
 export const HISTORY_STORAGE_KEY = 'agnes_chat_sessions'
 export const ACTIVE_SESSION_KEY = 'agnes_chat_active_id'
@@ -106,7 +107,7 @@ export function upsertSession(
     return { sessions, activeId: payload.id ?? '' }
   }
 
-  const id = payload.id ?? crypto.randomUUID()
+  const id = payload.id ?? randomId()
   const session: ChatSession = {
     id,
     title: sessionTitleFromTurns(storable),

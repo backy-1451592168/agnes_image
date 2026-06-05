@@ -16,14 +16,14 @@ npm run dev
 
 浏览器打开终端提示的本地地址（默认 `http://localhost:5173`），填入 API Key 与提示词后点击「生成图片」。可上传**参考图**在底图上改图；生成后可继续输入「修改说明」逐轮改图。对话中的图片与参考图预览均可**点击放大**；点击「新对话」可清空记录与参考图。
 
-### 可选：环境变量默认 Key
+### 环境变量
 
-```bash
-cp .env.example .env
-# 编辑 .env，填入 VITE_AGNES_API_KEY=你的key
-```
+| 文件 | 说明 |
+|------|------|
+| `.env.development` | `npm run dev` 加载，`VITE_AGNES_API_BASE=/api`（Vite 代理） |
+| `.env.production` | `npm run build` 加载，直连 `https://apihub.agnes-ai.com/v1` |
 
-页面输入框中的 Key 优先于环境变量。请勿将 `.env` 提交到 Git。
+可在对应文件填入 `VITE_AGNES_API_KEY` 作为默认 Key（勿提交真实 Key 到 Git）。页面输入框中的 Key 优先于环境变量。
 
 ## API 说明
 
@@ -52,9 +52,11 @@ cp .env.example .env
 
 ## 生产部署
 
-`npm run build` 产出在 `dist/`。静态站点部署时**必须**配置与开发环境相同的 `/api` → `https://apihub.agnes-ai.com/v1` 反向代理，否则生产构建无法直连 API（CORS）。
+`npm run build` 产出在 `dist/`。生产环境默认**直连** `https://apihub.agnes-ai.com/v1/images/generations`，不再请求站点自身的 `/api/...`（避免静态托管对 POST 返回 405）。
 
-Nginx 示例：
+若浏览器报 CORS 跨域：在 `.env.production` 改为 `VITE_AGNES_API_BASE=/api`，Nginx 配置下方反代后重新 `npm run build`。
+
+Nginx 反代示例（仅在你选用方案 2 时需要）：
 
 ```nginx
 location /api/ {
