@@ -569,102 +569,6 @@ function downloadImage(src: string, e?: Event) {
           </div>
         </div>
 
-        <div class="field">
-          <span class="field__label">参考图（可选）</span>
-          <div
-            class="ref-drop"
-            :class="{ 'ref-drop--active': refDropActive }"
-            tabindex="0"
-            @dragenter.prevent="onRefDragEnter"
-            @dragover.prevent
-            @dragleave.prevent="onRefDragLeave"
-            @drop.prevent="onRefDrop"
-            @paste="onPaste"
-          >
-            <div class="ref">
-              <label
-                class="gen__secondary ref__pick"
-                :class="{ 'ref__pick--disabled': loading }"
-              >
-                上传参考图
-                <input
-                  type="file"
-                  accept="image/*"
-                  class="field__file"
-                  :disabled="loading"
-                  @change="onReferenceFileChange"
-                />
-              </label>
-              <button
-                v-if="hasUploadedRef"
-                type="button"
-                class="gen__secondary"
-                :disabled="loading"
-                @click="clearReference"
-              >
-                移除
-              </button>
-            </div>
-            <p class="ref-drop__hint">
-              拖拽到此处，或按 Ctrl+V / ⌘V 粘贴图片（含截图）；点击此区域后粘贴更稳定
-            </p>
-            <div v-if="hasUploadedRef" class="ref__preview">
-              <img
-                :src="referenceImageSrc!"
-                alt="参考图预览"
-                class="ref__thumb img--zoomable"
-                title="点击放大"
-                @click="openLightbox(referenceImageSrc!)"
-              />
-              <span class="field__hint">点击预览可放大</span>
-            </div>
-          </div>
-        </div>
-
-        <label v-if="!isFollowUp" class="field">
-          <span class="field__label">尺寸</span>
-          <select v-model="size" class="field__input field__select">
-            <option v-for="opt in sizeOptions" :key="opt.value" :value="opt.value">
-              {{ opt.label }}
-            </option>
-          </select>
-        </label>
-        <p v-if="refHint" class="field__hint field__hint--block">
-          {{ refHint }}
-        </p>
-
-        <label class="field">
-          <span class="field__label">
-            {{ isImg2Img ? '修改说明 / 提示词' : '提示词' }}
-          </span>
-          <textarea
-            v-model="prompt"
-            class="field__input field__textarea"
-            rows="3"
-            :placeholder="
-              isImg2Img
-                ? '描述要如何改图或生成效果，例如：保留人物，改成水彩插画风格'
-                : '描述你想生成的画面，例如：晨雾峡谷上空的发光浮城，电影感写实'
-            "
-            required
-          />
-        </label>
-
-        <div class="gen__actions">
-          <button class="gen__submit" type="submit" :disabled="!canSubmit">
-            {{ submitLabel }}
-          </button>
-          <button
-            v-if="turns.length || hasUploadedRef"
-            type="button"
-            class="gen__secondary"
-            :disabled="loading"
-            @click="newChat"
-          >
-            新对话
-          </button>
-        </div>
-
         <div v-if="error" class="gen__error-wrap" role="alert">
           <p class="gen__error" :title="error">{{ error }}</p>
           <button
@@ -783,6 +687,106 @@ function downloadImage(src: string, e?: Event) {
           </div>
         </article>
       </div>
+
+      <form class="gen__composer" @submit.prevent="onSubmit">
+        <div class="gen__composer-options">
+          <label v-if="!isFollowUp" class="field gen__composer-size">
+            <span class="field__label">尺寸</span>
+            <select v-model="size" class="field__input field__select">
+              <option v-for="opt in sizeOptions" :key="opt.value" :value="opt.value">
+                {{ opt.label }}
+              </option>
+            </select>
+          </label>
+
+          <div class="field gen__composer-ref">
+            <span class="field__label">参考图（可选）</span>
+            <div
+              class="ref-drop"
+              :class="{ 'ref-drop--active': refDropActive }"
+              tabindex="0"
+              @dragenter.prevent="onRefDragEnter"
+              @dragover.prevent
+              @dragleave.prevent="onRefDragLeave"
+              @drop.prevent="onRefDrop"
+              @paste="onPaste"
+            >
+              <div class="ref">
+                <label
+                  class="gen__secondary ref__pick"
+                  :class="{ 'ref__pick--disabled': loading }"
+                >
+                  上传参考图
+                  <input
+                    type="file"
+                    accept="image/*"
+                    class="field__file"
+                    :disabled="loading"
+                    @change="onReferenceFileChange"
+                  />
+                </label>
+                <button
+                  v-if="hasUploadedRef"
+                  type="button"
+                  class="gen__secondary"
+                  :disabled="loading"
+                  @click="clearReference"
+                >
+                  移除
+                </button>
+              </div>
+              <p class="ref-drop__hint">
+                拖拽到此处，或按 Ctrl+V / ⌘V 粘贴图片（含截图）；点击此区域后粘贴更稳定
+              </p>
+              <div v-if="hasUploadedRef" class="ref__preview">
+                <img
+                  :src="referenceImageSrc!"
+                  alt="参考图预览"
+                  class="ref__thumb img--zoomable"
+                  title="点击放大"
+                  @click="openLightbox(referenceImageSrc!)"
+                />
+                <span class="field__hint">点击预览可放大</span>
+              </div>
+            </div>
+            <p v-if="refHint" class="field__hint field__hint--block">
+              {{ refHint }}
+            </p>
+          </div>
+        </div>
+
+        <label class="field gen__composer-prompt">
+          <span class="field__label">
+            {{ isImg2Img ? '修改说明 / 提示词' : '提示词' }}
+          </span>
+          <textarea
+            v-model="prompt"
+            class="field__input field__textarea"
+            rows="3"
+            :placeholder="
+              isImg2Img
+                ? '描述要如何改图或生成效果，例如：保留人物，改成水彩插画风格'
+                : '描述你想生成的画面，例如：晨雾峡谷上空的发光浮城，电影感写实'
+            "
+            required
+          />
+        </label>
+
+        <div class="gen__actions">
+          <button class="gen__submit" type="submit" :disabled="!canSubmit">
+            {{ submitLabel }}
+          </button>
+          <button
+            v-if="turns.length || hasUploadedRef"
+            type="button"
+            class="gen__secondary"
+            :disabled="loading"
+            @click="newChat"
+          >
+            新对话
+          </button>
+        </div>
+      </form>
     </section>
 
     <Teleport to="body">
@@ -1301,6 +1305,7 @@ function downloadImage(src: string, e?: Event) {
   min-width: 0;
   padding: 0.75rem 0;
   overflow: visible;
+  min-height: 200px;
 }
 
 @media (max-width: 839px) {
@@ -1320,10 +1325,76 @@ function downloadImage(src: string, e?: Event) {
   .gen__thread {
     flex: 1;
     min-height: 0;
-    padding: 1rem 1.15rem;
+    padding: 1rem 1.15rem 0.5rem;
     overflow-x: hidden;
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
+  }
+}
+
+.gen__composer {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 0.85rem 1.15rem 1rem;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.gen__composer-options {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.gen__composer-size,
+.gen__composer-ref,
+.gen__composer-prompt {
+  min-width: 0;
+}
+
+.gen__composer-prompt .field__textarea {
+  min-height: 5.5rem;
+  resize: vertical;
+}
+
+@media (min-width: 840px) {
+  .gen__composer-options {
+    flex-direction: row;
+    align-items: stretch;
+    gap: 1rem;
+  }
+
+  .gen__composer-size {
+    flex: 0 0 min(168px, 26%);
+    max-width: 200px;
+  }
+
+  .gen__composer-ref {
+    flex: 1;
+  }
+
+  .gen__composer-ref .ref-drop {
+    height: 100%;
+    min-height: 6.5rem;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .gen__composer-ref .ref-drop__hint {
+    flex: 1;
+  }
+
+  .gen__composer-ref .ref__thumb {
+    max-height: 96px;
+  }
+}
+
+@media (max-width: 839px) {
+  .gen__composer {
+    padding: 1rem 0 0;
   }
 }
 
