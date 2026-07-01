@@ -6,12 +6,14 @@ export interface GenerateImageParams {
   prompt: string
   size: ImageSize
   apiKey: string
+  baseUrl: string
+  model: string
   /** 上一轮生成图，用于连续修改（图生图） */
   referenceImage?: string
 }
 
 export interface ImageGenerationRequest {
-  model: typeof AGNES_IMAGE_MODEL
+  model: string
   prompt: string
   size: ImageSize
   extra_body?: {
@@ -57,4 +59,8 @@ export interface ApiErrorBody {
     type?: string
     code?: string
   }
+}
+
+export interface ModelsListResponse {
+  data?: { id: string }[]
 }

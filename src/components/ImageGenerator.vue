@@ -19,13 +19,14 @@ import {
 } from '../utils/chatHistory'
 import { randomId } from '../utils/randomId'
 
-const STORAGE_KEY = 'agnes_api_key'
-const API_KEYS_URL = 'https://platform.agnes-ai.com/settings/apiKeys'
+const props = defineProps<{
+  apiKey: string
+  baseUrl: string
+  model: string
+}>()
+
 const MAX_REF_MB = 8
 
-const apiKey = ref('')
-const showApiKey = ref(false)
-const rememberKey = ref(true)
 const prompt = ref('')
 const size = ref<ImageSize>('1024x768')
 const loading = ref(false)
@@ -33,24 +34,20 @@ const error = ref<string | null>(null)
 const turns = ref<ChatTurn[]>([])
 const sessions = ref<ChatSession[]>([])
 const activeSessionId = ref<string | null>(null)
-const historyOpen = ref(false)
 const threadRef = ref<HTMLElement | null>(null)
+const fileInputRef = ref<HTMLInputElement | null>(null)
 const referenceImageSrc = ref<string | null>(null)
 const lightboxSrc = ref<string | null>(null)
 const refDropActive = ref(false)
 const refDragDepth = ref(0)
 
 const sizeOptions: { value: ImageSize; label: string }[] = [
-  { value: '1024x768', label: '1024 × 768（横图）' },
-  { value: '1024x1024', label: '1024 × 1024（方图）' },
-  { value: '1024x1536', label: '1024 × 1536（竖图）' },
+  { value: '1024x768', label: '横图' },
+  { value: '1024x1024', label: '方图' },
+  { value: '1024x1536', label: '竖图' },
 ]
 
-const effectiveApiKey = computed(() => {
-  const fromInput = apiKey.value.trim()
-  if (fromInput) return fromInput
-  return import.meta.env.VITE_AGNES_API_KEY?.trim() ?? ''
-})
+const effectiveApiKey = computed(() => props.apiKey.trim())
 
 const lastImageSrc = computed(() => lastAssistantImageSrc(turns.value))
 
@@ -74,13 +71,11 @@ const loaderAspectRatio = computed(() => {
   return `${w} / ${h}`
 })
 
-const refHint = computed(() => {
+const composerHint = computed(() => {
   if (hasUploadedRef.value && isFollowUp.value) {
-    return '已上传参考图，将优先于上一轮结果作为底图'
+    return '参考图优先于上一轮结果'
   }
-  if (hasUploadedRef.value) return '将基于上传的参考图生成'
-  if (isFollowUp.value) return '将基于上一张生成图继续修改'
-  if (turns.value.length) return '历史图片未缓存，可上传参考图后继续改图'
+  if (isFollowUp.value) return '将基于上一张图继续修改'
   return ''
 })
 
@@ -148,7 +143,6 @@ function loadSession(id: string) {
   prompt.value = ''
   error.value = null
   clearReference()
-  historyOpen.value = false
   scrollThreadToEnd()
 }
 
@@ -175,12 +169,9 @@ function clearAllHistory() {
   sessions.value = []
   activeSessionId.value = null
   turns.value = []
-  historyOpen.value = false
 }
 
 onMounted(() => {
-  const saved = localStorage.getItem(STORAGE_KEY)
-  if (saved) apiKey.value = saved
   restoreHistoryOnMount()
   window.addEventListener('keydown', onKeydown)
   document.addEventListener('paste', onPaste, true)
@@ -196,14 +187,6 @@ onUnmounted(() => {
 function onKeydown(e: KeyboardEvent) {
   if (e.key === 'Escape' && lightboxSrc.value) {
     lightboxSrc.value = null
-  }
-}
-
-function persistKey() {
-  if (rememberKey.value && apiKey.value.trim()) {
-    localStorage.setItem(STORAGE_KEY, apiKey.value.trim())
-  } else {
-    localStorage.removeItem(STORAGE_KEY)
   }
 }
 
@@ -262,6 +245,18 @@ function onReferenceFileChange(e: Event) {
   const file = input.files?.[0]
   input.value = ''
   if (file) loadReferenceFile(file)
+}
+
+function onComposerKeydown(e: KeyboardEvent) {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault()
+    if (canSubmit.value) onSubmit()
+  }
+}
+
+function openFilePicker() {
+  if (loading.value) return
+  fileInputRef.value?.click()
 }
 
 function onPaste(e: ClipboardEvent) {
@@ -344,6 +339,8 @@ async function fulfillGeneration(
       prompt: text,
       size: size.value,
       apiKey: effectiveApiKey.value,
+      baseUrl: props.baseUrl,
+      model: props.model,
       referenceImage,
     })
     const item = res.data[0]
@@ -374,7 +371,6 @@ async function fulfillGeneration(
 async function retryGeneration(assistantId: string) {
   if (loading.value) return
 
-  persistKey()
   const asstIdx = turns.value.findIndex((t) => t.id === assistantId)
   if (asstIdx <= 0) return
 
@@ -393,7 +389,6 @@ async function retryGeneration(assistantId: string) {
 async function onSubmit() {
   if (!canSubmit.value) return
 
-  persistKey()
   const text = prompt.value.trim()
   const referenceImage = resolveReferenceImage()
   const uploadedReferenceImage = referenceImageSrc.value
@@ -434,148 +429,75 @@ function downloadImage(src: string, e?: Event) {
 
 <template>
   <div class="gen">
-    <section class="gen__panel">
-      <header class="gen__header">
-        <p class="gen__eyebrow">Agnes Image 2.1 Flash</p>
-        <h1 class="gen__title">无限想象</h1>
-        <p class="gen__desc">输入描述，通过 Agnes API 生成画面</p>
-      </header>
-      <form class="gen__form" @submit.prevent="onSubmit">
-        <label class="field">
-          <span class="field__label-row">
-            <span class="field__label">API Key</span>
-            <a
-              :href="API_KEYS_URL"
-              class="field__link"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              前往官网获取 Key →
-            </a>
-          </span>
-          <div class="field__input-wrap">
-            <input
-              v-model="apiKey"
-              class="field__input field__input--action"
-              :type="showApiKey ? 'text' : 'password'"
-              placeholder="粘贴从 Agnes 平台复制的 API Key"
-              autocomplete="off"
-            />
+    <aside class="gen__sidebar" aria-label="历史记录">
+      <button
+        type="button"
+        class="sidebar__new"
+        :disabled="loading"
+        @click="newChat"
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.75"
+            stroke-linecap="round"
+            d="M12 5v14M5 12h14"
+          />
+        </svg>
+        新对话
+      </button>
+
+      <div class="sidebar__scroll">
+        <p v-if="!hasHistory" class="sidebar__empty">生成后自动保存到本机</p>
+        <ul v-else class="history__list">
+          <li
+            v-for="session in sessions"
+            :key="session.id"
+            class="history__item"
+            :class="{ 'history__item--active': session.id === activeSessionId }"
+          >
             <button
               type="button"
-              class="field__toggle"
-              :aria-label="showApiKey ? '隐藏 API Key' : '显示 API Key'"
-              :aria-pressed="showApiKey"
-              @click.stop="showApiKey = !showApiKey"
-            >
-              <svg
-                v-if="!showApiKey"
-                class="field__toggle-icon"
-                viewBox="0 0 24 24"
-                aria-hidden="true"
-              >
-                <path
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="1.75"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  d="M3 3l18 18M10.5 10.677a2.25 2.25 0 0 0 3.046 3.046M7.5 7.846c-2.047 1.24-3.5 3.154-4.5 4.154 0 0 3.5 5 9 5 1.55 0 2.96-.38 4.2-.99M14.121 14.121A2.25 2.25 0 0 0 9.88 9.88"
-                />
-              </svg>
-              <svg v-else class="field__toggle-icon" viewBox="0 0 24 24" aria-hidden="true">
-                <path
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="1.75"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                  d="M2.25 12s3.75-7.5 9.75-7.5S21.75 12 21.75 12s-3.75 7.5-9.75 7.5S2.25 12 2.25 12z"
-                />
-                <circle
-                  cx="12"
-                  cy="12"
-                  r="2.75"
-                  fill="none"
-                  stroke="currentColor"
-                  stroke-width="1.75"
-                />
-              </svg>
-            </button>
-          </div>
-        </label>
-
-        <label class="field field--row">
-          <input v-model="rememberKey" type="checkbox" class="field__check" />
-          <span class="field__hint">记住 Key（仅存于本机 localStorage）</span>
-        </label>
-
-        <div class="history field">
-          <div class="history__head">
-            <span class="field__label">历史记录</span>
-            <button
-              type="button"
-              class="history__toggle"
+              class="history__load"
               :disabled="loading"
-              @click="historyOpen = !historyOpen"
+              @click="loadSession(session.id)"
             >
-              {{ historyOpen ? '收起' : hasHistory ? `查看 (${sessions.length})` : '暂无' }}
+              <span class="history__title">{{ session.title }}</span>
+              <span class="history__meta">
+                {{ userTurnCount(session.turns) }} 轮 · {{ formatSessionTime(session.updatedAt) }}
+                <span v-if="lastAssistantImageSrc(session.turns)" class="history__continue">
+                  可继续改图
+                </span>
+              </span>
             </button>
-          </div>
-          <div v-if="historyOpen" class="history__panel">
-            <p v-if="!hasHistory" class="field__hint">生成后会自动保存到本机</p>
-            <p v-else class="field__hint history__hint">
-              点击加载后可继续改图；有缓存图片时将自动作为底图
-            </p>
-            <ul v-if="hasHistory" class="history__list">
-              <li
-                v-for="session in sessions"
-                :key="session.id"
-                class="history__item"
-                :class="{ 'history__item--active': session.id === activeSessionId }"
-              >
-                <button
-                  type="button"
-                  class="history__load"
-                  :disabled="loading"
-                  @click="loadSession(session.id)"
-                >
-                  <span class="history__title">{{ session.title }}</span>
-                  <span class="history__meta">
-                    {{ userTurnCount(session.turns) }} 轮 · {{ formatSessionTime(session.updatedAt) }}
-                    <span
-                      v-if="lastAssistantImageSrc(session.turns)"
-                      class="history__continue"
-                    >
-                      可继续改图
-                    </span>
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  class="history__delete"
-                  :disabled="loading"
-                  aria-label="删除"
-                  @click="deleteSession(session.id, $event)"
-                >
-                  ×
-                </button>
-              </li>
-            </ul>
             <button
-              v-if="hasHistory"
               type="button"
-              class="history__clear"
+              class="history__delete"
               :disabled="loading"
-              @click="clearAllHistory"
+              aria-label="删除"
+              @click="deleteSession(session.id, $event)"
             >
-              清空全部历史
+              ×
             </button>
-          </div>
-        </div>
+          </li>
+        </ul>
+      </div>
 
-        <div v-if="error" class="gen__error-wrap" role="alert">
-          <p class="gen__error" :title="error">{{ error }}</p>
+      <button
+        v-if="hasHistory"
+        type="button"
+        class="history__clear"
+        :disabled="loading"
+        @click="clearAllHistory"
+      >
+        清空全部历史
+      </button>
+    </aside>
+
+    <section class="gen__main">
+      <div v-if="error" class="gen__error-wrap" role="alert">
+        <p class="gen__error" :title="error">{{ error }}</p>
           <button
             v-if="lastFailedAssistantId"
             type="button"
@@ -604,16 +526,11 @@ function downloadImage(src: string, e?: Event) {
             </svg>
           </button>
         </div>
-      </form>
-    </section>
 
-    <section class="gen__thread-wrap">
       <div ref="threadRef" class="gen__thread">
         <div v-if="!turns.length" class="gen__placeholder gen__placeholder--idle">
           <p>对话记录将显示在这里</p>
-          <p class="gen__placeholder-sub">
-            可上传参考图改图，或生成后继续对话修改；点击图片可放大
-          </p>
+          <p class="gen__placeholder-sub">输入描述生成图片，点 + 或粘贴图片作为参考；Enter 发送</p>
         </div>
 
         <article
@@ -694,102 +611,114 @@ function downloadImage(src: string, e?: Event) {
       </div>
 
       <form class="gen__composer" @submit.prevent="onSubmit">
-        <div class="gen__composer-options">
-          <label v-if="!isFollowUp" class="field gen__composer-size">
-            <span class="field__label">尺寸</span>
-            <select v-model="size" class="field__input field__select">
-              <option v-for="opt in sizeOptions" :key="opt.value" :value="opt.value">
-                {{ opt.label }}
-              </option>
-            </select>
-          </label>
-
-          <div class="field gen__composer-ref">
-            <span class="field__label">参考图（可选）</span>
-            <div
-              class="ref-drop"
-              :class="{ 'ref-drop--active': refDropActive }"
-              tabindex="0"
-              @dragenter.prevent="onRefDragEnter"
-              @dragover.prevent
-              @dragleave.prevent="onRefDragLeave"
-              @drop.prevent="onRefDrop"
-              @paste="onPaste"
-            >
-              <div class="ref">
-                <label
-                  class="gen__secondary ref__pick"
-                  :class="{ 'ref__pick--disabled': loading }"
-                >
-                  上传参考图
-                  <input
-                    type="file"
-                    accept="image/*"
-                    class="field__file"
-                    :disabled="loading"
-                    @change="onReferenceFileChange"
-                  />
-                </label>
-                <button
-                  v-if="hasUploadedRef"
-                  type="button"
-                  class="gen__secondary"
-                  :disabled="loading"
-                  @click="clearReference"
-                >
-                  移除
-                </button>
-              </div>
-              <p class="ref-drop__hint">
-                拖拽到此处，或按 Ctrl+V / ⌘V 粘贴图片（含截图）；点击此区域后粘贴更稳定
-              </p>
-              <div v-if="hasUploadedRef" class="ref__preview">
-                <img
-                  :src="referenceImageSrc!"
-                  alt="参考图预览"
-                  class="ref__thumb img--zoomable"
-                  title="点击放大"
-                  @click="openLightbox(referenceImageSrc!)"
-                />
-                <span class="field__hint">点击预览可放大</span>
-              </div>
+        <div
+          class="composer"
+          :class="{ 'composer--drag': refDropActive }"
+          @dragenter.prevent="onRefDragEnter"
+          @dragover.prevent
+          @dragleave.prevent="onRefDragLeave"
+          @drop.prevent="onRefDrop"
+        >
+          <div v-if="hasUploadedRef" class="composer__attachments">
+            <div class="composer__attachment">
+              <button
+                type="button"
+                class="composer__attachment-thumb"
+                title="点击放大"
+                @click="openLightbox(referenceImageSrc!)"
+              >
+                <img :src="referenceImageSrc!" alt="参考图" />
+              </button>
+              <button
+                type="button"
+                class="composer__attachment-remove"
+                aria-label="移除参考图"
+                :disabled="loading"
+                @click="clearReference"
+              >
+                ×
+              </button>
             </div>
-            <p v-if="refHint" class="field__hint field__hint--block">
-              {{ refHint }}
-            </p>
           </div>
-        </div>
 
-        <label class="field gen__composer-prompt">
-          <span class="field__label">
-            {{ isImg2Img ? '修改说明 / 提示词' : '提示词' }}
-          </span>
-          <textarea
-            v-model="prompt"
-            class="field__input field__textarea"
-            rows="3"
-            :placeholder="
-              isImg2Img
-                ? '描述要如何改图或生成效果，例如：保留人物，改成水彩插画风格'
-                : '描述你想生成的画面，例如：晨雾峡谷上空的发光浮城，电影感写实'
-            "
-            required
-          />
-        </label>
+          <div class="composer__row">
+            <button
+              type="button"
+              class="composer__attach"
+              aria-label="上传参考图"
+              :disabled="loading"
+              @click="openFilePicker"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  d="M12 5v14M5 12h14"
+                />
+              </svg>
+            </button>
+            <input
+              ref="fileInputRef"
+              type="file"
+              accept="image/*"
+              class="composer__file"
+              :disabled="loading"
+              @change="onReferenceFileChange"
+            />
+            <textarea
+              v-model="prompt"
+              class="composer__input"
+              rows="1"
+              :placeholder="
+                isImg2Img
+                  ? '描述要如何改图，可点 + 或粘贴图片作为参考'
+                  : '描述你想生成的画面，可点 + 或粘贴图片'
+              "
+              :disabled="loading"
+              required
+              @keydown="onComposerKeydown"
+              @paste="onPaste"
+            />
+          </div>
 
-        <div class="gen__actions">
-          <button class="gen__submit" type="submit" :disabled="!canSubmit">
-            {{ submitLabel }}
-          </button>
-          <button
-            v-if="turns.length || hasUploadedRef"
-            type="button"
-            class="gen__secondary"
-            :disabled="loading"
-            @click="newChat"
-          >
-            新对话
-          </button>
+          <div class="composer__footer">
+            <div class="composer__meta">
+              <select
+                v-if="!isFollowUp"
+                v-model="size"
+                class="composer__size"
+                :disabled="loading"
+              >
+                <option v-for="opt in sizeOptions" :key="opt.value" :value="opt.value">
+                  {{ opt.label }}
+                </option>
+              </select>
+              <span v-else class="composer__mode">改图</span>
+              <span v-if="composerHint" class="composer__hint">{{ composerHint }}</span>
+            </div>
+            <div class="composer__actions">
+              <button
+                type="submit"
+                class="composer__send"
+                :disabled="!canSubmit"
+                :aria-label="submitLabel"
+                :title="submitLabel"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    d="M12 19V5M5 12l7-7 7 7"
+                  />
+                </svg>
+              </button>
+            </div>
+          </div>
         </div>
       </form>
     </section>
@@ -802,15 +731,108 @@ function downloadImage(src: string, e?: Event) {
 
 <style scoped>
 .gen {
-  display: grid;
-  gap: 1.5rem;
+  display: flex;
+  gap: 1rem;
   width: 100%;
   min-width: 0;
+  flex: 1;
+  min-height: 0;
+}
+
+.gen__sidebar {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  width: 240px;
+  min-height: 0;
+  padding: 0.85rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.sidebar__new {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  width: 100%;
+  padding: 0.6rem 0.75rem;
+  font-size: 0.88rem;
+  font-weight: 500;
+  color: var(--text);
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  transition:
+    border-color 0.15s,
+    color 0.15s;
+}
+
+.sidebar__new svg {
+  width: 1rem;
+  height: 1rem;
+  color: var(--accent);
+}
+
+.sidebar__new:hover:not(:disabled) {
+  border-color: var(--accent-dim);
+  color: var(--accent);
+}
+
+.sidebar__scroll {
+  flex: 1;
+  min-height: 0;
+  margin-top: 0.75rem;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.sidebar__empty {
+  margin: 0;
+  padding: 0.5rem 0.25rem;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.gen__main {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.25rem 1.35rem;
+}
+
+@media (min-width: 840px) {
+  .gen__sidebar {
+    max-height: 100%;
+    align-self: stretch;
+  }
+}
+
+@media (max-width: 839px) {
+  .gen {
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+
+  .gen__sidebar {
+    width: 100%;
+    max-height: 200px;
+  }
 }
 
 @media (max-width: 839px) {
   .turn--user {
     max-width: 100%;
+  }
+
+  .gen__main {
+    padding: 1rem;
   }
 
   .gen__error-wrap,
@@ -839,56 +861,10 @@ function downloadImage(src: string, e?: Event) {
 }
 
 @media (min-width: 840px) {
-  .gen {
-    grid-template-columns: minmax(280px, 360px) 1fr;
-    align-items: stretch;
+  .gen__main {
     flex: 1;
-    min-height: 0;
+    overflow: hidden;
   }
-}
-
-.gen__panel,
-.gen__thread-wrap {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 1.25rem 1.35rem;
-}
-
-.gen__header {
-  margin-bottom: 1.25rem;
-}
-
-.gen__eyebrow {
-  margin: 0 0 0.35rem;
-  font-size: 0.72rem;
-  font-weight: 600;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--accent);
-}
-
-.gen__title {
-  margin: 0;
-  font-family: var(--font-display);
-  font-size: clamp(1.75rem, 4vw, 2.25rem);
-  font-weight: 400;
-  font-style: italic;
-  line-height: 1.1;
-  color: var(--text);
-}
-
-.gen__desc {
-  margin: 0.5rem 0 0;
-  font-size: 0.88rem;
-  line-height: 1.45;
-  color: var(--text-muted);
-}
-
-.gen__form {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
 }
 
 .field {
@@ -944,18 +920,6 @@ function downloadImage(src: string, e?: Event) {
   background: var(--surface-raised);
   border-radius: 6px;
   border: 1px solid var(--border);
-}
-
-.field__file {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  margin: 0;
-  padding: 0;
-  opacity: 0;
-  cursor: pointer;
-  font-size: 0;
 }
 
 .field__input-wrap {
@@ -1032,68 +996,6 @@ function downloadImage(src: string, e?: Event) {
   accent-color: var(--accent);
 }
 
-.ref-drop {
-  padding: 0.75rem;
-  border: 1px dashed var(--border);
-  border-radius: 8px;
-  background: var(--surface-raised);
-  outline: none;
-  transition:
-    border-color 0.15s,
-    background 0.15s;
-}
-
-.ref-drop:focus-visible {
-  border-color: var(--accent-dim);
-}
-
-.ref-drop--active {
-  border-color: var(--accent);
-  background: rgba(212, 168, 120, 0.08);
-}
-
-.ref-drop__hint {
-  margin: 0.5rem 0 0;
-  font-size: 0.78rem;
-  color: var(--text-muted);
-  line-height: 1.4;
-}
-
-.ref {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-}
-
-.ref__pick {
-  position: relative;
-  flex: 1;
-  min-width: 120px;
-  cursor: pointer;
-  text-align: center;
-}
-
-.ref__pick--disabled {
-  opacity: 0.55;
-  pointer-events: none;
-  cursor: not-allowed;
-}
-
-.ref__preview {
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-  align-items: flex-start;
-}
-
-.ref__thumb {
-  max-width: 100%;
-  max-height: 140px;
-  object-fit: contain;
-  border-radius: 6px;
-  border: 1px solid var(--border);
-}
-
 .img--zoomable {
   cursor: zoom-in;
   transition: box-shadow 0.15s, transform 0.15s;
@@ -1103,41 +1005,6 @@ function downloadImage(src: string, e?: Event) {
   box-shadow: 0 0 0 2px var(--accent-dim);
 }
 
-.gen__actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-}
-
-.history__head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
-}
-
-.history__toggle {
-  padding: 0.35rem 0.65rem;
-  font-size: 0.78rem;
-  color: var(--accent);
-  background: transparent;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-}
-
-.history__toggle:hover:not(:disabled) {
-  border-color: var(--accent-dim);
-  color: var(--text);
-}
-
-.history__panel {
-  margin-top: 0.35rem;
-  padding: 0.65rem;
-  background: var(--surface-raised);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-}
-
 .history__list {
   list-style: none;
   margin: 0;
@@ -1145,8 +1012,6 @@ function downloadImage(src: string, e?: Event) {
   display: flex;
   flex-direction: column;
   gap: 0.35rem;
-  max-height: 220px;
-  overflow-y: auto;
 }
 
 .history__item {
@@ -1192,10 +1057,6 @@ function downloadImage(src: string, e?: Event) {
   color: var(--text-muted);
 }
 
-.history__hint {
-  margin: 0 0 0.5rem;
-}
-
 .history__continue {
   margin-left: 0.35rem;
   color: var(--accent);
@@ -1218,8 +1079,9 @@ function downloadImage(src: string, e?: Event) {
 }
 
 .history__clear {
+  flex-shrink: 0;
   width: 100%;
-  margin-top: 0.5rem;
+  margin-top: 0.65rem;
   padding: 0.45rem;
   font-size: 0.78rem;
   color: var(--text-muted);
@@ -1231,41 +1093,6 @@ function downloadImage(src: string, e?: Event) {
 .history__clear:hover:not(:disabled) {
   color: var(--danger);
   border-color: var(--danger);
-}
-
-.gen__submit {
-  flex: 1;
-  min-width: 120px;
-  padding: 0.75rem 1.25rem;
-  font-weight: 600;
-  color: var(--bg);
-  background: linear-gradient(135deg, var(--accent), var(--accent-dim));
-  border: none;
-  border-radius: 6px;
-  transition: filter 0.15s, transform 0.1s;
-}
-
-.gen__submit:hover:not(:disabled) {
-  filter: brightness(1.06);
-}
-
-.gen__submit:active:not(:disabled) {
-  transform: scale(0.99);
-}
-
-.gen__secondary {
-  padding: 0.75rem 1rem;
-  font-size: 0.88rem;
-  color: var(--text-muted);
-  background: transparent;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  transition: border-color 0.15s, color 0.15s;
-}
-
-.gen__secondary:hover:not(:disabled) {
-  color: var(--text);
-  border-color: var(--accent-dim);
 }
 
 .gen__error-wrap,
@@ -1324,115 +1151,255 @@ function downloadImage(src: string, e?: Event) {
   height: 1.05rem;
 }
 
-/* 默认（移动端）：随内容撑开，无内部滚动条 */
-.gen__thread-wrap {
-  display: flex;
-  flex-direction: column;
-  padding: 0;
-  min-width: 0;
-  min-height: auto;
-  max-height: none;
-  overflow: visible;
-}
-
+/* 对话区：占满中间空间，避免被底部输入区挤没 */
 .gen__thread {
   display: flex;
   flex-direction: column;
   gap: 1rem;
+  flex: 1 1 auto;
   min-width: 0;
+  min-height: clamp(220px, 34vh, 520px);
   padding: 0.75rem 0;
-  overflow: visible;
-  min-height: 200px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 @media (max-width: 839px) {
-  .gen__panel,
-  .gen__thread-wrap {
+  .gen__main {
     padding: 1rem;
   }
 }
 
 @media (min-width: 840px) {
-  .gen__thread-wrap {
-    min-height: 0;
-    height: 100%;
-    overflow: hidden;
-  }
-
   .gen__thread {
     flex: 1 1 0;
-    justify-content: center;
-    min-height: 0;
-    padding: 1rem 1.15rem 0.5rem;
-    overflow-x: hidden;
-    overflow-y: auto;
-    -webkit-overflow-scrolling: touch;
+    padding: 0 0 0.5rem;
   }
 }
 
 .gen__composer {
   flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-  padding: 0.85rem 1.15rem 1rem;
+  padding: 0.75rem 0 0;
   border-top: 1px solid var(--border);
-  background: var(--surface);
 }
 
-.gen__composer-options {
+.composer {
+  border: 1px solid var(--border);
+  border-radius: 1.35rem;
+  background: var(--surface-raised);
+  padding: 0.55rem 0.65rem 0.5rem;
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s;
+}
+
+.composer:focus-within {
+  border-color: var(--accent-dim);
+  box-shadow: 0 0 0 1px rgba(212, 168, 120, 0.12);
+}
+
+.composer--drag {
+  border-color: var(--accent);
+  background: rgba(212, 168, 120, 0.06);
+}
+
+.composer__attachments {
   display: flex;
-  flex-direction: column;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.15rem 0.35rem 0.5rem;
+}
+
+.composer__attachment {
+  position: relative;
+}
+
+.composer__attachment-thumb {
+  display: block;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: none;
+  cursor: zoom-in;
+}
+
+.composer__attachment-thumb img {
+  display: block;
+  width: 56px;
+  height: 56px;
+  object-fit: cover;
+}
+
+.composer__attachment-remove {
+  position: absolute;
+  top: -0.35rem;
+  right: -0.35rem;
+  width: 1.25rem;
+  height: 1.25rem;
+  padding: 0;
+  font-size: 0.9rem;
+  line-height: 1;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 50%;
+}
+
+.composer__attachment-remove:hover:not(:disabled) {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.composer__row {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.35rem;
+}
+
+.composer__attach {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  margin-bottom: 0.1rem;
+  color: var(--text-muted);
+  background: transparent;
+  border: none;
+  border-radius: 50%;
+}
+
+.composer__attach:hover:not(:disabled) {
+  color: var(--accent);
+  background: rgba(212, 168, 120, 0.1);
+}
+
+.composer__attach svg {
+  width: 1.15rem;
+  height: 1.15rem;
+}
+
+.composer__file {
+  display: none;
+}
+
+.composer__input {
+  flex: 1;
+  min-width: 0;
+  min-height: 2.25rem;
+  max-height: 9rem;
+  padding: 0.45rem 0.35rem;
+  font-size: 0.95rem;
+  line-height: 1.45;
+  color: var(--text);
+  background: transparent;
+  border: none;
+  outline: none;
+  resize: none;
+  field-sizing: content;
+}
+
+.composer__input::placeholder {
+  color: var(--text-muted);
+}
+
+.composer__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: 0.75rem;
+  padding: 0.2rem 0.15rem 0 0.35rem;
+}
+
+.composer__meta {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
   min-width: 0;
+  flex: 1;
 }
 
-.gen__composer-size,
-.gen__composer-ref,
-.gen__composer-prompt {
-  min-width: 0;
+.composer__size {
+  flex-shrink: 0;
+  padding: 0.2rem 1.5rem 0.2rem 0.5rem;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  background: transparent;
+  border: none;
+  outline: none;
+  cursor: pointer;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' fill='%239a8f82'%3E%3Cpath d='M5 7L1 3h8z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.2rem center;
 }
 
-.gen__composer-prompt .field__textarea {
-  min-height: 5.5rem;
-  resize: vertical;
+.composer__size:hover:not(:disabled) {
+  color: var(--text);
 }
 
-@media (min-width: 840px) {
-  .gen__composer-options {
-    flex-direction: row;
-    align-items: stretch;
-    gap: 1rem;
-  }
+.composer__mode {
+  font-size: 0.78rem;
+  color: var(--accent);
+}
 
-  .gen__composer-size {
-    flex: 0 0 min(168px, 26%);
-    max-width: 200px;
-  }
+.composer__hint {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
-  .gen__composer-ref {
-    flex: 1;
-  }
+.composer__actions {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-shrink: 0;
+}
 
-  .gen__composer-ref .ref-drop {
-    height: 100%;
-    min-height: 6.5rem;
-    display: flex;
-    flex-direction: column;
-  }
+.composer__send {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.15rem;
+  height: 2.15rem;
+  padding: 0;
+  color: var(--bg);
+  background: linear-gradient(135deg, var(--accent), var(--accent-dim));
+  border: none;
+  border-radius: 50%;
+  transition: filter 0.15s, transform 0.1s, opacity 0.15s;
+}
 
-  .gen__composer-ref .ref-drop__hint {
-    flex: 1;
-  }
+.composer__send svg {
+  width: 1rem;
+  height: 1rem;
+}
 
-  .gen__composer-ref .ref__thumb {
-    max-height: 96px;
-  }
+.composer__send:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.composer__send:active:not(:disabled) {
+  transform: scale(0.96);
+}
+
+.composer__send:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
 }
 
 @media (max-width: 839px) {
   .gen__composer {
-    padding: 1rem 0 0;
+    padding: 0.65rem 0 0;
+  }
+
+  .composer__hint {
+    display: none;
   }
 }
 
@@ -1463,15 +1430,18 @@ function downloadImage(src: string, e?: Event) {
   flex-direction: row-reverse;
   align-self: flex-end;
   max-width: 100%;
+  margin-right: 10px;
 }
 
 .turn--assistant {
   align-self: flex-start;
+  max-width: 100%;
 }
 
 .turn__body {
   flex: 1;
   min-width: 0;
+  max-width: min(100%, 480px);
 }
 
 .turn__user {
@@ -1502,6 +1472,7 @@ function downloadImage(src: string, e?: Event) {
 
 .turn__pending {
   width: 100%;
+  max-width: 360px;
 }
 
 .turn__img--reveal {
@@ -1538,14 +1509,16 @@ function downloadImage(src: string, e?: Event) {
   flex-direction: column;
   gap: 0.5rem;
   align-items: flex-start;
+  width: 100%;
+  max-width: 480px;
 }
 
 .turn__img {
   display: block;
   width: 100%;
-  max-width: 100%;
+  max-width: 480px;
   height: auto;
-  border-radius: 28px;
+  border-radius: 16px;
   border: 1px solid var(--border);
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
 }
