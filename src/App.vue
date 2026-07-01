@@ -195,15 +195,15 @@ onUnmounted(() => {
 .app {
   max-width: 1400px;
   margin: 0 auto;
-  padding: 2.5rem 1.5rem 4rem;
+  padding: 1.5rem 1.5rem 4rem;
 }
 
 .app__top {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 1rem;
-  margin-bottom: 1.5rem;
+  margin-bottom: 1rem;
 }
 
 .app__brand {
@@ -296,7 +296,7 @@ onUnmounted(() => {
     display: flex;
     flex-direction: column;
     min-height: 100vh;
-    padding-bottom: 2rem;
+    padding-bottom: 1rem;
   }
 
   .app__main {
