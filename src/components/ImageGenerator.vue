@@ -1174,14 +1174,13 @@ function downloadImage(src: string, e?: Event) {
 @media (min-width: 840px) {
   .gen__thread {
     flex: 1 1 0;
-    padding: 0 0 0.5rem;
+    padding: 0.8rem 0 0.5rem;
   }
 }
 
 .gen__composer {
   flex-shrink: 0;
   padding: 0.75rem 0 0;
-  border-top: 1px solid var(--border);
 }
 
 .composer {

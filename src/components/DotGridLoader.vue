@@ -32,7 +32,7 @@ withDefaults(
   border-radius: 10px;
   border: 1px solid var(--border);
   overflow: hidden;
-  background: #d6d2cd;
+  background: #333333;
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
 }
 
